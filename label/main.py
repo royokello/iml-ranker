@@ -1,7 +1,7 @@
 import argparse
 import json
 import os
-from flask import Flask, render_template
+from flask import Flask, jsonify, render_template, request, send_from_directory
 
 
 app = Flask(__name__)
@@ -15,6 +15,23 @@ def index():
     total_images = sum(1 for entry in os.scandir(images_path) if entry.is_file())
     total_labels = len(labels)
     return render_template('index.html', total_images=total_images, total_labels=total_labels)
+
+@app.route('/image/<int:img_id>')
+def get_image(img_id):
+    global images_path
+    return send_from_directory(images_path, f"{img_id}.png")
+
+@app.route('/label', methods=['POST'])
+def label_image():
+    global labels, labels_path
+    data = request.json
+    if data:
+        labels[data['id']] = data['choice']
+        with open(labels_path, 'w') as f:
+            json.dump(labels, f, indent=4)
+        return jsonify(success=True)
+    else:
+        return jsonify(success=False)
 
 def label(working_dir: str):
     global images_path, labels_path, labels
