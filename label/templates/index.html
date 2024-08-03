@@ -1,0 +1,100 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>IML Ranker Labeler</title>
+    <style>
+        body {
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            font-family: Arial, sans-serif;
+        }
+        #image-container {
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            margin-top: 20px;
+        }
+        .image-container {
+            width: 384px;
+            height: 384px;
+            margin: 0 10px;
+            object-fit: contain;
+        }
+    </style>
+</head>
+<body>
+    <h1>IML Ranker Labeler</h1>
+
+    <div>
+        <p>Total Images: {{ total_images }}</p>
+        <p>Total Labels: <span id="total-labels">{{ total_labels }}</span></p>  
+    </div>
+
+    <div>
+        <button onclick="addLabel(false)">Left</button>
+        <button onclick="getRandomPair()">Random</button>
+        <button onclick="addLabel(true)">Right</button>
+    </div>
+
+    <div id="image-container">
+        <img id="image-1" class="image-container" src="" alt="Image 1">
+        <img id="image-2" class="image-container" src="" alt="Image 2">
+    </div>
+
+    <script>
+
+        const total_images = {{ total_images }};
+        let total_labels = {{ total_labels }};
+
+        let idx_1 = 1
+        let idx_2 = 2
+
+        window.onload = function() {
+            getRandomPair()
+        };
+
+        function fetchImageByIndex(index, elem_id) {
+            const imageUrl = `/image/${index}`;
+            document.getElementById(elem_id).src = imageUrl;
+        }
+
+        function getRandomPair() {
+            idx_1 = Math.floor(Math.random() * total_images) + 1;
+            idx_2 = Math.floor(Math.random() * total_images) + 1;
+            while (idx_1 === idx_2) {
+                idx_2 = Math.floor(Math.random() * total_images) + 1;
+            }
+            fetchImageByIndex(idx_1, 'image-1');
+            fetchImageByIndex(idx_2, 'image-2');
+        }
+
+        function addLabel(choice) {
+            const id = `${Math.min(idx_1, idx_2)}_${Math.max(idx_1, idx_2)}`;
+            fetch('/label', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    'id': id,
+                    'choice': choice,
+                })
+            }).then(response => response.json())
+            .then(data => {
+                if (data.success) {
+                    total_labels += 1
+                    document.getElementById('total-labels').innerText = total_labels;
+                    getRandomPair()
+                } else {
+                    alert('Failed to save label.');
+                }
+            }).catch(error => {
+                console.error('Error saving label:', error);
+                alert('Error saving label. See console for details.');
+            });
+        }
+
+    </script>
+</body>
+</html>
