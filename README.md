@@ -9,3 +9,11 @@ IML-Ranker is a Python library for ranking images using machine learning and the
 ## Train
 
 `python train.py -w "path to working directory" -e "epochs" -c "checkpoints" -b "base model name (optional)"`
+
+## Rank
+
+`python rank.py -w "path to working directory" -c "comparisons"`
+
+## Extract
+
+`python extract.py -w "path to working directory" -p "percentile"`

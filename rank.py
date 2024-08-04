@@ -11,15 +11,6 @@ from torchvision import transforms
 def elo_rating(rating1, rating2, outcome, k=32):
     """
     Update Elo ratings based on the outcome of a comparison.
-
-    Args:
-        rating1 (float): Elo rating of the first image.
-        rating2 (float): Elo rating of the second image.
-        outcome (float): Outcome of the comparison (1 if the first image wins, 0 if the second image wins).
-        k (int, optional): The K-factor that determines the adjustment rate. Default is 32.
-
-    Returns:
-        float, float: Updated Elo ratings for the first and second image.
     """
     expected1 = 1 / (1 + 10 ** ((rating2 - rating1) / 400))
     expected2 = 1 / (1 + 10 ** ((rating1 - rating2) / 400))
