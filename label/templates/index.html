@@ -22,6 +22,8 @@
             height: 384px;
             margin: 0 10px;
             object-fit: contain;
+            border-style: solid;
+            border-width: 2px;
         }
     </style>
 </head>
@@ -37,6 +39,11 @@
         <button onclick="addLabel(false)">Left</button>
         <button onclick="getRandomPair()">Random</button>
         <button onclick="addLabel(true)">Right</button>
+    </div>
+
+    <div>
+        <button onclick="getPrediction()">Predict</button>
+        <p id="prediction-label">No Prediction</p>
     </div>
 
     <div id="image-container">
@@ -69,6 +76,7 @@
             }
             fetchImageByIndex(idx_1, 'image-1');
             fetchImageByIndex(idx_2, 'image-2');
+            document.getElementById('prediction-label').innerText = "No Prediction";
         }
 
         function addLabel(choice) {
@@ -92,6 +100,24 @@
             }).catch(error => {
                 console.error('Error saving label:', error);
                 alert('Error saving label. See console for details.');
+            });
+        }
+
+        function getPrediction() {
+            fetch('/predict', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    'img_1_id': idx_1,
+                    'img_2_id': idx_2
+                })
+            }).then(response => response.json())
+            .then(data => {
+                const prediction = data.prediction;
+                document.getElementById('prediction-label').innerText = prediction ? "Right Image Preferred" : "Left Image Preferred";
+            }).catch(error => {
+                console.error('Error getting prediction:', error);
+                alert('Error getting prediction. See console for details.');
             });
         }
 

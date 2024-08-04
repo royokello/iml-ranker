@@ -2,12 +2,21 @@ import argparse
 import json
 import os
 from flask import Flask, jsonify, render_template, request, send_from_directory
+import torch
+
+from model import ComparisonNet
+from predict import predict
+from utils import get_model_by_latest
 
 
 app = Flask(__name__)
+
 images_path = ""
 labels_path = ""
+low_res_path = ""
 labels: dict[str, bool] = {}
+device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+model = ComparisonNet()
 
 @app.route('/')
 def index():
@@ -32,9 +41,21 @@ def label_image():
         return jsonify(success=True)
     else:
         return jsonify(success=False)
+    
+@app.route('/predict', methods=['POST'])
+def predict_choice():
+    global low_res_path, device, model
+    data = request.json
+    if data:
+        image_1_path = os.path.join(low_res_path, f"{data['img_1_id']}.png")
+        image_2_path = os.path.join(low_res_path, f"{data['img_2_id']}.png")
+        prediction = predict(device=device, model=model, image_1_path=image_1_path, image_2_path=image_2_path)
+        return jsonify(prediction=prediction)
+    else:
+        return jsonify(success=False, message="Invalid data"), 400
 
 def label(working_dir: str):
-    global images_path, labels_path, labels
+    global images_path, labels_path, labels, device, model, low_res_path
     images_path = os.path.join(working_dir, 'cropper', 'output', '512p')
     labels_path = os.path.join(working_dir, 'ranker', 'labels.json')
     if os.path.exists(labels_path):
@@ -42,6 +63,10 @@ def label(working_dir: str):
             labels = json.load(f)
     else:
         labels = {}
+    models_path = os.path.join(working_dir, 'ranker', 'models')
+    model = get_model_by_latest(device=device, directory=models_path)
+    model.eval()
+    low_res_path = os.path.join(working_dir, 'cropper', 'output', '256p')
     app.run(debug=True)
 
 if __name__ == "__main__":
