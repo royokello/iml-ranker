@@ -3,82 +3,369 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>IML Ranker Labeler</title>
+    <title>IML Ranker GUI</title>
     <style>
         body {
             display: flex;
             flex-direction: column;
             align-items: center;
             font-family: Arial, sans-serif;
+            margin: 0;
+            padding: 0;
+            background-color: #f5f5f5;
         }
-        #image-container {
+        .header {
+            background-color: #3f51b5;
+            color: white;
+            width: 100%;
+            padding: 20px 0;
+            text-align: center;
+        }
+        .main-container {
             display: flex;
+            flex-direction: row;
             justify-content: center;
+            align-items: flex-start;
+            width: 100%;
+            max-width: 1200px;
+            padding: 20px;
+            box-sizing: border-box;
+        }
+        .image-section {
+            display: flex;
+            flex-direction: column;
             align-items: center;
-            margin-top: 20px;
+            margin: 0 20px;
         }
         .image-container {
             width: 384px;
             height: 384px;
-            margin: 0 10px;
             object-fit: contain;
-            border-style: solid;
-            border-width: 2px;
+            border: 2px solid #ccc;
+            background-color: white;
+        }
+        .random-button {
+            padding: 8px 16px;
+            margin-top: 10px;
+            font-size: 14px;
+            cursor: pointer;
+            border: none;
+            border-radius: 5px;
+            background-color: #673AB7; /* Deep Purple */
+            color: white;
+            transition: background-color 0.3s ease;
+        }
+        .random-button:hover {
+            background-color: #512da8;
+        }
+        .central-controls {
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            margin: 0 20px;
+        }
+        .switch-button, .random-pair-button {
+            padding: 10px 20px;
+            margin: 10px 0;
+            font-size: 16px;
+            cursor: pointer;
+            border: none;
+            border-radius: 5px;
+            color: white;
+            transition: background-color 0.3s ease;
+        }
+        .switch-button {
+            background-color: #FFC107; /* Amber */
+        }
+        .switch-button:hover {
+            background-color: #ffb300;
+        }
+        .random-pair-button {
+            background-color: #009688; /* Teal */
+        }
+        .random-pair-button:hover {
+            background-color: #00796b;
+        }
+        .labels-container {
+            display: flex;
+            flex-direction: column;
+            align-items: stretch;
+            width: 200px;
+            margin-top: 20px;
+        }
+        .label-button {
+            padding: 10px;
+            margin: 5px 0;
+            font-size: 16px;
+            cursor: pointer;
+            border: none;
+            border-radius: 5px;
+            color: white;
+            transition: background-color 0.3s ease;
+        }
+        .label-left {
+            background-color: #4CAF50; /* Green */
+        }
+        .label-left:hover {
+            background-color: #43a047;
+        }
+        .label-right {
+            background-color: #f44336; /* Red */
+        }
+        .label-right:hover {
+            background-color: #d32f2f;
+        }
+        .label-both {
+            background-color: #2196F3; /* Blue */
+        }
+        .label-both:hover {
+            background-color: #1976d2;
+        }
+        .label-neither {
+            background-color: #9E9E9E; /* Grey */
+        }
+        .label-neither:hover {
+            background-color: #757575;
+        }
+        .labels-summary {
+            width: 100%;
+            margin-top: 20px;
+            background-color: #ffffff;
+            padding: 15px;
+            border: 1px solid #ccc;
+            border-radius: 8px;
+        }
+        .labels-summary h3 {
+            margin-top: 0;
+            text-align: center;
+        }
+        .stat-item {
+            display: flex;
+            justify-content: space-between;
+            padding: 5px 0;
+            border-bottom: 1px solid #eee;
+        }
+        .stat-item:last-child {
+            border-bottom: none;
+        }
+        .model-container {
+            margin-top: 30px;
+            width: 100%;
+            text-align: center;
+        }
+        #model-select {
+            padding: 8px 12px;
+            font-size: 16px;
+            border: 1px solid #ccc;
+            border-radius: 5px;
+            margin-right: 10px;
+        }
+        #current-model {
+            font-weight: bold;
+        }
+        #prediction-label {
+            margin-top: 10px;
+            font-size: 18px;
+            color: #555;
+        }
+        @media (max-width: 992px) {
+            .main-container {
+                flex-direction: column;
+                align-items: center;
+            }
+            .central-controls {
+                margin: 20px 0;
+            }
+            .labels-container {
+                width: 250px;
+            }
+        }
+        @media (max-width: 600px) {
+            .image-container {
+                width: 280px;
+                height: 280px;
+            }
+            .labels-container {
+                width: 100%;
+            }
+            .random-pair-button, .switch-button {
+                width: 100%;
+            }
+            #model-select {
+                width: 100%;
+                margin-bottom: 10px;
+            }
         }
     </style>
 </head>
 <body>
-    <h1>IML Ranker Labeler</h1>
-
-    <div>
-        <p>Total Images: {{ total_images }}</p>
-        <p>Total Labels: <span id="total-labels">{{ total_labels }}</span></p>  
+    <div class="header">
+        <h1>IML Ranker GUI</h1>
     </div>
 
-    <div>
-        <button onclick="addLabel(false)">Left</button>
-        <button onclick="getRandomPair()">Random</button>
-        <button onclick="addLabel(true)">Right</button>
+    <div class="main-container">
+
+        <!-- Left Image Section -->
+        <div class="image-section">
+            <img id="image-1" class="image-container" src="" alt="Image 1">
+            <button class="random-button" onclick="get_random_image(1)">Random Image 1</button>
+        </div>
+
+        <!-- Central Controls Section -->
+        <div class="central-controls">
+
+            <div>
+                <h3>Stats</h3>
+                <p>Total Images: {{ total_images }}</p>
+                <p>Total Labeled: <span id="total-labels">{{ total_labels }}</span></p>
+                <p>
+                    <span>L:</span>
+                    <span id="left-labels">{{ label_stats['left'] }}</span>
+                    <span>R:</span>
+                    <span id="right-labels">{{ label_stats['right'] }}</span>
+                    <span>B:</span>
+                    <span id="both-labels">{{ label_stats['both'] }}</span>
+                    <span>N:</span>
+                    <span id="neither-labels">{{ label_stats['neither'] }}</span>
+                </p>
+            </div>
+
+            <button class="switch-button" onclick="switchImages()">Switch</button>
+            <button class="random-pair-button" onclick="getRandomPair()">Random Pair</button>
+
+            <div class="labels-container">
+                <button class="label-button label-left" onclick="addLabel('left')">Left</button>
+                <button class="label-button label-right" onclick="addLabel('right')">Right</button>
+                <button class="label-button label-both" onclick="addLabel('both')">Both</button>
+                <button class="label-button label-neither" onclick="addLabel('neither')">Neither</button>
+            </div>
+        </div>
+
+        <!-- Right Image Section -->
+        <div class="image-section">
+            <img id="image-2" class="image-container" src="" alt="Image 2">
+            <button class="random-button" onclick="get_random_image(2)">Random Image 2</button>
+        </div>
+
     </div>
 
-    <div>
+    <!-- Prediction Display -->
+    <div class="prediction-display">
         <button onclick="getPrediction()">Predict</button>
         <p id="prediction-label">No Prediction</p>
     </div>
 
-    <div id="image-container">
-        <img id="image-1" class="image-container" src="" alt="Image 1">
-        <img id="image-2" class="image-container" src="" alt="Image 2">
+    <!-- Model Loading Section -->
+    <div class="model-container">
+        <h3>Model</h3>
+        <select id="model-select">
+            <option value="" disabled selected>Select a model</option>
+        </select>
+        <button onclick="load_model()">Load Model</button>
+        <p>Current Model: <span id="current-model">None</span></p>
     </div>
 
     <script>
-
+        // Initialize variables with server-side data
         const total_images = {{ total_images }};
         let total_labels = {{ total_labels }};
+        let label_stats = {
+            "left": {{ label_stats['left'] }},
+            "right": {{ label_stats['right'] }},
+            "both": {{ label_stats['both'] }},
+            "neither": {{ label_stats['neither'] }}
+        };
+        let models = {{ models|tojson }};
+        let current_model = "None";
 
-        let idx_1 = 1
-        let idx_2 = 2
+        // Image indices
+        let idx_1 = 1;
+        let idx_2 = 2;
 
         window.onload = function() {
-            getRandomPair()
+            // Load a random pair of images on page load
+            getRandomPair();
+
+            // Populate the model selection dropdown
+            const modelSelect = document.getElementById('model-select');
+            models.forEach(model => {
+                const option = document.createElement('option');
+                option.value = model;
+                option.textContent = model;
+                modelSelect.appendChild(option);
+            });
+
+            // Set the current model if available
+            if (models.length > 0) {
+                const latestModel = models[models.length - 1];
+                document.getElementById('current-model').textContent = latestModel;
+            }
         };
 
+        /**
+         * Fetches and displays an image by its index.
+         * @param {number} index - The image index.
+         * @param {string} elem_id - The ID of the img element.
+         */
         function fetchImageByIndex(index, elem_id) {
             const imageUrl = `/image/${index}`;
             document.getElementById(elem_id).src = imageUrl;
-        }
-
-        function getRandomPair() {
-            idx_1 = Math.floor(Math.random() * total_images) + 1;
-            idx_2 = Math.floor(Math.random() * total_images) + 1;
-            while (idx_1 === idx_2) {
-                idx_2 = Math.floor(Math.random() * total_images) + 1;
-            }
-            fetchImageByIndex(idx_1, 'image-1');
-            fetchImageByIndex(idx_2, 'image-2');
             document.getElementById('prediction-label').innerText = "No Prediction";
         }
 
+        /**
+         * Fetches a random pair of images.
+         */
+        function getRandomPair() {
+            get_random_image(1);
+            get_random_image(2);
+        }
+
+        /**
+         * Fetches a random image for a given position.
+         * @param {number} position - 1 for left image, 2 for right image.
+         */
+        function get_random_image(position) {
+            if (position === 2) {
+                idx_2 = Math.floor(Math.random() * total_images) + 1;
+                while (idx_2 === idx_1) {
+                    idx_2 = Math.floor(Math.random() * total_images) + 1;
+                }
+                fetchImageByIndex(idx_2, 'image-2');
+            } else {
+                idx_1 = Math.floor(Math.random() * total_images) + 1;
+                while (idx_1 === idx_2) {
+                    idx_1 = Math.floor(Math.random() * total_images) + 1;
+                }
+                fetchImageByIndex(idx_1, 'image-1');
+            }
+        }
+
+        /**
+         * Switches the positions of the two images.
+         */
+        function switchImages() {
+            // Swap image sources
+            const img1 = document.getElementById('image-1');
+            const img2 = document.getElementById('image-2');
+
+            const tempSrc = img1.src;
+            img1.src = img2.src;
+            img2.src = tempSrc;
+
+            // Swap image indices
+            const tempIdx = idx_1;
+            idx_1 = idx_2;
+            idx_2 = tempIdx;
+
+            // Reset prediction label
+            document.getElementById('prediction-label').innerText = "No Prediction";
+        }
+
+        /**
+         * Adds a label to the current image pair.
+         * @param {string} choice - The label choice ('left', 'right', 'both', 'neither').
+         */
         function addLabel(choice) {
             const id = `${Math.min(idx_1, idx_2)}_${Math.max(idx_1, idx_2)}`;
             fetch('/label', {
@@ -91,11 +378,25 @@
             }).then(response => response.json())
             .then(data => {
                 if (data.success) {
-                    total_labels += 1
+                    // Update total labels
+                    total_labels += 1;
                     document.getElementById('total-labels').innerText = total_labels;
-                    getRandomPair()
+
+                    // Update specific label count
+                    if (choice in label_stats) {
+                        label_stats[choice] += 1;
+                        document.getElementById(`${choice}-labels`).innerText = label_stats[choice];
+                    } else {
+                        console.error('Unknown choice:', choice);
+                    }
+
+                    // Fetch a new random pair
+                    getRandomPair();
+
+                    // Optional: Display a confirmation message
+                    // alert('Label saved successfully!');
                 } else {
-                    alert('Failed to save label.');
+                    alert('Failed to save label: ' + (data.error || 'Unknown error.'));
                 }
             }).catch(error => {
                 console.error('Error saving label:', error);
@@ -103,6 +404,9 @@
             });
         }
 
+        /**
+         * Fetches and displays a prediction for the current image pair.
+         */
         function getPrediction() {
             fetch('/predict', {
                 method: 'POST',
@@ -114,13 +418,62 @@
             }).then(response => response.json())
             .then(data => {
                 const prediction = data.prediction;
-                document.getElementById('prediction-label').innerText = prediction ? "Right Image Preferred" : "Left Image Preferred";
+
+                // Display the prediction result
+                let predictionMessage = '';
+                switch (prediction) {
+                    case 'left':
+                        predictionMessage = 'Left Image Preferred';
+                        break;
+                    case 'right':
+                        predictionMessage = 'Right Image Preferred';
+                        break;
+                    case 'both':
+                        predictionMessage = 'Both Images are Equally Preferred';
+                        break;
+                    case 'neither':
+                        predictionMessage = 'Neither Image is Preferred';
+                        break;
+                    default:
+                        predictionMessage = 'Unknown Prediction';
+                }
+
+                document.getElementById('prediction-label').innerText = predictionMessage;
             }).catch(error => {
                 console.error('Error getting prediction:', error);
                 alert('Error getting prediction. See console for details.');
             });
         }
 
+        /**
+         * Loads the selected model.
+         */
+         function load_model() {
+            const model_name = document.getElementById('model-select').value;
+            if (!model_name) {
+                alert('Please select a model to load.');
+                return;
+            }
+
+            fetch(`/load_model/${model_name}`)
+                .then(response => {
+                    if (!response.ok) {
+                        return response.json().then(data => {
+                            throw new Error(data.message || 'Failed to load model');
+                        });
+                    }
+                    return response.json();
+                })
+                .then(data => {
+                    console.log(`Model ${model_name} loaded successfully`);
+                    document.getElementById('current-model').textContent = model_name;
+                    alert(`Model "${model_name}" loaded successfully.`);
+                })
+                .catch(error => {
+                    console.error('There was a problem loading the model:', error);
+                    alert('Failed to load model: ' + error.message);
+                });
+        }
     </script>
 </body>
 </html>

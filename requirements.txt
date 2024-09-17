@@ -1,3 +1,6 @@
-Flask==3.0.3
-torch==2.3.1
-pillow==10.4.0
+Flask
+torch
+pillow
+torchvision
+tensorboard
+scikit-learn
