@@ -5,6 +5,7 @@ import argparse
 import copy
 import shutil
 import time
+import glob
 from pathlib import Path
 
 import torch
@@ -13,8 +14,8 @@ import torch.optim as optim
 from torch.utils.data import DataLoader
 
 from dataset import create_data_loaders
-from model import CustomResNet  # Updated import to use CustomResNet
-from utils import get_model_by_name  # Ensure this utility is compatible with CustomResNet
+from model import ViTRanker
+from utils import get_model_by_name
 
 def parse_args():
     """
@@ -23,93 +24,49 @@ def parse_args():
     Returns:
         argparse.Namespace: Parsed command-line arguments.
     """
-    parser = argparse.ArgumentParser(description="Train a Custom ResNet for Image Preference Learning.")
+    parser = argparse.ArgumentParser(description="Train a Vision Transformer (ViT) for Image Culling.")
     
     parser.add_argument(
-        '-w', '--working_dir',
+        '-r', '--root_dir',
         type=str,
         required=True,
-        help='Path to the working directory containing ranker and cropper directories.'
+        help='Path to the root directory containing album folders.'
     )
     
     parser.add_argument(
         '-e', '--epochs',
         type=int,
-        default=64,
-        help='Number of training epochs (default: 64).'
-    )
-    
-    parser.add_argument(
-        '-c', '--num_workers',
-        type=int,
-        default=8,
-        help='Number of worker processes for data loading (default: 8).'
-    )
-    
-    parser.add_argument(
-        '-b', '--batch_size',
-        type=int,
-        default=32,
-        help='Batch size for training (default: 32).'
-    )
-    
-    parser.add_argument(
-        '-lr', '--learning_rate',
-        type=float,
-        default=1e-4,
-        help='Learning rate for the optimizer (default: 1e-4).'
-    )
-    
-    parser.add_argument(
-        '-s', '--scheduler_step',
-        type=int,
-        default=10,
-        help='Step size for learning rate scheduler (default: 10 epochs).'
-    )
-    
-    parser.add_argument(
-        '-cr', '--checkpoint_resume',
-        type=str,
-        default=None,
-        help='Path to a checkpoint file to resume training.'
-    )
-
-    parser.add_argument(
-        '-cf', '--checkpoint_freq',
-        type=int,
-        default=8,
-        help='Checkpoint frequency in epochs (default: 8).'
+        default=256,
+        help='Number of training epochs (default: 256).'
     )
     
     args = parser.parse_args()
     return args
 
-def save_checkpoint(state, is_best, checkpoint_dir, filename='checkpoint.pth'):
+def save_checkpoint(state, is_best, checkpoint_path, best_model_path):
     """
     Saves the training checkpoint.
     
     Args:
         state (dict): State dictionary containing model state and optimizer state.
         is_best (bool): If True, saves the model as the best model.
-        checkpoint_dir (str): Directory to save the checkpoint.
-        filename (str): Filename for the checkpoint.
+        checkpoint_path (str): Path to save the checkpoint.
+        best_model_path (str): Path to save the best model.
     """
-    os.makedirs(checkpoint_dir, exist_ok=True)
-    checkpoint_path = os.path.join(checkpoint_dir, filename)
+    os.makedirs(os.path.dirname(checkpoint_path), exist_ok=True)
     torch.save(state, checkpoint_path)
     
     if is_best:
-        best_path = os.path.join(checkpoint_dir, 'best_model.pth')
         # Replace copy.deepcopy with shutil.copyfile
-        shutil.copyfile(checkpoint_path, best_path)
-        print(f"Best model updated: {best_path}")
+        shutil.copyfile(checkpoint_path, best_model_path)
+        print(f"Best model updated: {best_model_path}")
 
 def train_one_epoch(model, dataloader, criterion, optimizer, device):
     """
     Trains the model for one epoch.
     
     Args:
-        model (nn.Module): The Custom ResNet model.
+        model (nn.Module): The ViTRanker model.
         dataloader (DataLoader): DataLoader for training data.
         criterion (nn.Module): Loss function.
         optimizer (optim.Optimizer): Optimizer.
@@ -147,7 +104,7 @@ def validate(model, dataloader, criterion, device):
     Validates the model.
     
     Args:
-        model (nn.Module): The Custom ResNet model.
+        model (nn.Module): The ViTRanker model.
         dataloader (DataLoader): DataLoader for validation data.
         criterion (nn.Module): Loss function.
         device (torch.device): Device to validate on.
@@ -179,41 +136,86 @@ def validate(model, dataloader, criterion, device):
     accuracy = correct / total
     return epoch_loss, accuracy
 
+def load_all_labels(root_dir):
+    """
+    Load and combine labels from all album directories.
+    
+    Args:
+        root_dir (str): Path to the root directory containing album folders.
+        
+    Returns:
+        dict: Combined dictionary of all labels from all albums.
+    """
+    # The dataset.py module now handles this logic
+    # We'll use an empty dictionary here and let dataset.py load the CSV files
+    return {}
+
+def find_all_images(root_dir):
+    """
+    Find all source images from all album directories.
+    
+    Args:
+        root_dir (str): Path to the root directory containing album folders.
+        
+    Returns:
+        list: List of paths to all source images.
+    """
+    all_images = []
+    
+    # Find all album directories
+    for album_dir in os.listdir(root_dir):
+        album_path = os.path.join(root_dir, album_dir)
+        if os.path.isdir(album_path):
+            src_dir = os.path.join(album_path, 'src')
+            if os.path.isdir(src_dir):
+                # Get all image files
+                for ext in ['*.jpg', '*.jpeg', '*.png']:
+                    image_paths = glob.glob(os.path.join(src_dir, ext))
+                    all_images.extend(image_paths)
+    
+    return all_images
+
 def main():
     # Parse command-line arguments
     args = parse_args()
     
-    working_dir = args.working_dir
+    root_dir = args.root_dir
     epochs = args.epochs
-    num_workers = args.num_workers
-    batch_size = args.batch_size
-    learning_rate = args.learning_rate
-    scheduler_step = args.scheduler_step
-    checkpoint_resume = args.checkpoint_resume
-    checkpoint_freq = args.checkpoint_freq
+    
+    # Fixed parameters
+    learning_rate = 1e-4
+    batch_size = 8
+    num_workers = 2
+    scheduler_step = 10
     
     # Define paths
-    ranker_dir = os.path.join(working_dir, 'ranker')
-    cropper_output_dir = os.path.join(working_dir, 'cropper', 'output', '256p')
-    models_dir = os.path.join(ranker_dir, 'models')
-    labels_file = os.path.join(ranker_dir, 'labels.json')
+    model_path = os.path.join(root_dir, 'rank_model.pth')
     
-    # Create models directory if it doesn't exist
-    os.makedirs(models_dir, exist_ok=True)
+    # Make sure models directory exists
+    os.makedirs(os.path.dirname(model_path), exist_ok=True)
     
     # Device configuration
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     print(f"Using device: {device}")
     
+    # Find all images (for reporting purposes only)
+    print("Checking for images...")
+    all_images = find_all_images(root_dir)
+    
+    if not all_images:
+        print("Error: No images found. Ensure that album directories contain src/ folders with image files.")
+        return
+    
+    print(f"Found {len(all_images)} images across all albums.")
+    
     # Create data loaders
-    print("Loading data...")
     try:
+        print("Loading and processing labels from CSV files...")
         train_loader, val_loader, test_loader = create_data_loaders(
-            image_dir=cropper_output_dir,
-            labels_file=labels_file,
+            root_dir=root_dir,
             batch_size=batch_size,
             num_workers=num_workers,
-            image_size=(256, 256),
+            image_size=(224, 224),  # For ViT compatibility
             train_ratio=0.75,
             val_ratio=0.15,
             test_ratio=0.10,
@@ -225,32 +227,32 @@ def main():
     
     # Initialize the model
     print("Initializing the model...")
-    if checkpoint_resume:
-        model = get_model_by_name(device=device, directory=models_dir, name=checkpoint_resume)
+    if os.path.exists(model_path):
+        model = ViTRanker()
+        model.load_state_dict(torch.load(model_path, map_location=device))
+        print(f"Loaded existing model from {model_path}")
     else:
-        model = CustomResNet()
+        model = ViTRanker(num_classes=4, pretrained=True)
     
     model = model.to(device)
     
     # Define loss function and optimizer
-    criterion = nn.CrossEntropyLoss()  # Updated for multi-class classification
+    criterion = nn.CrossEntropyLoss()  # For multi-class classification
     optimizer = optim.Adam(model.parameters(), lr=learning_rate, weight_decay=1e-5)
     
     # Define learning rate scheduler
     scheduler = optim.lr_scheduler.StepLR(optimizer, step_size=scheduler_step, gamma=0.1)
     
-    # Optionally resume from a checkpoint
+    # Training parameters
     best_val_acc = 0.0
-    start_epoch = 0
-
     patience = 8  # Number of epochs to wait for improvement
     epochs_no_improve = 0
-
+    
     # Training loop
     print("Starting training...")
     since = time.time()
     
-    for epoch in range(start_epoch, epochs):
+    for epoch in range(epochs):
         print(f"\nEpoch {epoch + 1}/{epochs}")
         print("-" * 10)
         
@@ -267,23 +269,16 @@ def main():
         
         # Check if this is the best model so far
         is_best = val_acc >= best_val_acc
-
+        
         if is_best:
             best_val_acc = val_acc
             epochs_no_improve = 0
             best_model_wts = copy.deepcopy(model.state_dict())
-            checkpoint_path = os.path.join(models_dir, "best.pth")
-            torch.save(model.state_dict(), checkpoint_path)
+            torch.save(model.state_dict(), model_path)
             print(f"New best model found and saved with validation accuracy: {best_val_acc:.4f}")
-        
         else:
             epochs_no_improve += 1
-
-        if (epoch + 1) % checkpoint_freq == 0:
-            checkpoint_path = os.path.join(models_dir, f"{int(time.time())}_e={epoch + 1}")
-            torch.save(model.state_dict(), checkpoint_path)
-            print(f"Checkpoint saved at epoch {epoch + 1}.")
-
+        
         if epochs_no_improve >= patience:
             print(f"Early stopping triggered after {patience} epochs with no improvement.")
             break
@@ -302,9 +297,8 @@ def main():
     print(f"Test Loss: {test_loss:.4f} | Test Accuracy: {test_acc:.4f}")
     
     # Save the final model
-    final_model_path = os.path.join(models_dir, 'final_model.pth')
-    torch.save(model.state_dict(), final_model_path)
-    print(f"Final model saved at '{final_model_path}'.")
+    torch.save(model.state_dict(), model_path)
+    print(f"Final model saved at '{model_path}'.")
 
 if __name__ == "__main__":
     main()

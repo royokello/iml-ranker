@@ -2,13 +2,14 @@
 
 import os
 import json
+import csv
+import glob
 from typing import List, Tuple, Dict, Optional
 
 import torch
 from torch.utils.data import Dataset, DataLoader
 from PIL import Image
 from torchvision import transforms
-from sklearn.model_selection import train_test_split
 
 # Updated label mapping to include "both" and "neither"
 LABEL_MAP = {
@@ -31,7 +32,7 @@ class PreferenceDataset(Dataset):
 
     def __init__(
         self,
-        image_dir: str,
+        root_dir: str,
         labels: Dict[str, str],
         transform: Optional[transforms.Compose] = None,
     ):
@@ -39,11 +40,11 @@ class PreferenceDataset(Dataset):
         Initializes the PreferenceDataset.
 
         Args:
-            image_dir (str): Directory containing all images. Filenames should correspond to image IDs (e.g., "363.png").
-            labels (Dict[str, str]): Dictionary with keys as "id1_id2" and values as "left", "right", "both", or "neither".
+            root_dir (str): Root directory containing album folders with src/ images.
+            labels (Dict[str, str]): Dictionary with keys as "album/id1|||id2" and values as "left", "right", "both", or "neither".
             transform (Optional[transforms.Compose]): Transformations to apply to the images.
         """
-        self.image_dir = image_dir
+        self.root_dir = root_dir
         self.labels = labels
         self.transform = transform
         self.pairs = list(labels.keys())
@@ -65,11 +66,33 @@ class PreferenceDataset(Dataset):
                 - Label tensor (0: "left", 1: "right", 2: "both", 3: "neither")
         """
         pair_key = self.pairs[idx]
-        id1, id2 = pair_key.split('_')
+        
+        # Parse album and image IDs from the pair key
+        if '/' in pair_key:
+            album, pair = pair_key.split('/', 1)
+            # Handle multiple underscores in image IDs
+            parts = pair.split('|||')
+            # The pattern should be id1|||id2, but ids themselves might contain underscores
+            # We'll assume the last part separates the two IDs
+            if len(parts) > 2:
+                id2 = parts[-1]  # Last part is id2
+                id1 = '|||'.join(parts[:-1])  # Everything else is id1
+            else:
+                id1, id2 = parts
+        else:
+            # Fallback for old format
+            parts = pair_key.split('|||')
+            # Handle multiple underscores in the image IDs
+            if len(parts) > 2:
+                id2 = parts[-1]  # Last part is id2
+                id1 = '|||'.join(parts[:-1])  # Everything else is id1
+            else:
+                id1, id2 = parts
+            album = None
 
         # Construct image file paths
-        img1_path = self._get_image_path(id1)
-        img2_path = self._get_image_path(id2)
+        img1_path = self._get_image_path(album, id1)
+        img2_path = self._get_image_path(album, id2)
 
         # Load images
         image1 = self._load_image(img1_path)
@@ -89,21 +112,37 @@ class PreferenceDataset(Dataset):
 
         return image1, image2, label
 
-    def _get_image_path(self, image_id: str) -> str:
+    def _get_image_path(self, album: Optional[str], image_id: str) -> str:
         """
-        Constructs the full path to an image given its ID.
+        Constructs the full path to an image given its album and ID.
 
         Args:
+            album (Optional[str]): Album folder name, or None for root-level images.
             image_id (str): Image ID.
 
         Returns:
             str: Full path to the image file.
         """
-        filename = f"{image_id}.png"  # Update extension if necessary (e.g., ".jpg")
-        full_path = os.path.join(self.image_dir, filename)
-        if not os.path.isfile(full_path):
-            raise FileNotFoundError(f"Image file '{full_path}' not found.")
-        return full_path
+        # Try multiple extensions
+        extensions = ['.png', '.jpg', '.jpeg']
+        
+        if album:
+            for ext in extensions:
+                # Check in src directory
+                path = os.path.join(self.root_dir, album, 'src', f"{image_id}{ext}")
+                if os.path.isfile(path):
+                    return path
+            
+            # If not found, raise an error
+            raise FileNotFoundError(f"Image file for ID '{image_id}' in album '{album}' not found.")
+        else:
+            # Old format fallback
+            for ext in extensions:
+                path = os.path.join(self.root_dir, f"{image_id}{ext}")
+                if os.path.isfile(path):
+                    return path
+                
+            raise FileNotFoundError(f"Image file for ID '{image_id}' not found.")
 
     def _load_image(self, path: str) -> Image.Image:
         """
@@ -122,26 +161,52 @@ class PreferenceDataset(Dataset):
             raise IOError(f"Error loading image '{path}': {e}")
 
 
-def load_labels(labels_file: str) -> Dict[str, str]:
+def load_csv_labels(csv_file: str, album: str) -> Dict[str, str]:
     """
-    Loads label data from a JSON file.
+    Loads label data from a CSV file.
 
     Args:
-        labels_file (str): Path to the JSON file containing labels.
+        csv_file (str): Path to the CSV file containing labels.
+        album (str): Album name to prefix the image IDs.
 
     Returns:
-        Dict[str, str]: Dictionary with keys as "id1_id2" and values as "left", "right", "both", or "neither".
+        Dict[str, str]: Dictionary with keys as "album/id1|||id2" and values as "left", "right", "both", or "neither".
     """
-    if not os.path.isfile(labels_file):
-        raise FileNotFoundError(f"Labels file '{labels_file}' not found.")
+    if not os.path.isfile(csv_file):
+        raise FileNotFoundError(f"Labels file '{csv_file}' not found.")
 
-    with open(labels_file, 'r') as f:
-        labels = json.load(f)
-
-    # Validate labels
-    for pair, label in labels.items():
-        if label.lower() not in LABEL_MAP:
-            raise ValueError(f"Invalid label '{label}' for pair '{pair}'. Must be one of {list(LABEL_MAP.keys())}.")
+    labels = {}
+    with open(csv_file, 'r', newline='') as f:
+        reader = csv.reader(f)
+        header = next(reader, None)  # Skip header row
+        
+        # Determine column indexes based on header
+        if header:
+            try:
+                img1_idx = header.index('img_1')
+                img2_idx = header.index('img_2')
+                choice_idx = header.index('rank')
+            except ValueError:
+                # Fallback to positional if header doesn't match expected format
+                img1_idx, img2_idx, choice_idx = 0, 1, 2
+        else:
+            # No header, assume positional
+            img1_idx, img2_idx, choice_idx = 0, 1, 2
+        
+        for row in reader:
+            if len(row) > max(img1_idx, img2_idx, choice_idx):
+                id1 = row[img1_idx].strip()
+                id2 = row[img2_idx].strip()
+                choice = row[choice_idx].strip().lower()
+                
+                # Validate choice
+                if choice not in LABEL_MAP:
+                    print(f"Warning: Invalid label '{choice}' in {csv_file}. Skipping.")
+                    continue
+                
+                # Create key with album prefix and special delimiter
+                key = f"{album}/{id1}|||{id2}"
+                labels[key] = choice
 
     return labels
 
@@ -169,17 +234,24 @@ def split_dataset(
     if not abs(train_ratio + val_ratio + test_ratio - 1.0) < 1e-6:
         raise ValueError("Train, validation, and test ratios must sum to 1.")
 
+    import random
+    random.seed(random_state)
+    
     pairs = list(labels.keys())
-    train_val_pairs, test_pairs = train_test_split(
-        pairs, test_size=test_ratio, random_state=random_state, shuffle=True
-    )
-    train_pairs, val_pairs = train_test_split(
-        train_val_pairs,
-        test_size=val_ratio / (train_ratio + val_ratio),
-        random_state=random_state,
-        shuffle=True,
-    )
-
+    random.shuffle(pairs)
+    
+    # Calculate split indices
+    n_samples = len(pairs)
+    test_size = int(n_samples * test_ratio)
+    val_size = int(n_samples * val_ratio)
+    train_size = n_samples - test_size - val_size
+    
+    # Split the data
+    train_pairs = pairs[:train_size]
+    val_pairs = pairs[train_size:train_size + val_size]
+    test_pairs = pairs[train_size + val_size:]
+    
+    # Create the dictionaries
     train_labels = {pair: labels[pair] for pair in train_pairs}
     val_labels = {pair: labels[pair] for pair in val_pairs}
     test_labels = {pair: labels[pair] for pair in test_pairs}
@@ -188,7 +260,7 @@ def split_dataset(
 
 
 def get_data_transforms(
-    image_size: Tuple[int, int] = (256, 256),
+    image_size: Tuple[int, int] = (224, 224),
     augment: bool = True,
 ) -> transforms.Compose:
     """
@@ -199,34 +271,34 @@ def get_data_transforms(
         augment (bool): Whether to include data augmentation.
 
     Returns:
-        transforms.Compose: Composed transformations.
+        transforms.Compose: Composition of transformations to apply.
     """
     if augment:
         transform = transforms.Compose([
-            transforms.Resize(image_size),  # Resize to 256x256
-            transforms.RandomHorizontalFlip(),  # Data augmentation
-            transforms.RandomRotation(15),      # Data augmentation
-            transforms.ColorJitter(brightness=0.2, contrast=0.2, saturation=0.2, hue=0.1),  # Data augmentation
+            transforms.Resize((image_size[0] + 20, image_size[1] + 20)),
+            transforms.RandomCrop(image_size),
+            transforms.RandomHorizontalFlip(),
+            transforms.RandomRotation(15),
+            transforms.ColorJitter(brightness=0.1, contrast=0.1, saturation=0.1, hue=0.05),
             transforms.ToTensor(),
-            transforms.Normalize(mean=[0.485, 0.456, 0.406],  # ImageNet mean
-                                 std=[0.229, 0.224, 0.225]),  # ImageNet std
+            transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
         ])
     else:
         transform = transforms.Compose([
-            transforms.Resize(image_size),  # Resize to 256x256
+            transforms.Resize(image_size),
             transforms.ToTensor(),
-            transforms.Normalize(mean=[0.485, 0.456, 0.406],  # ImageNet mean
-                                 std=[0.229, 0.224, 0.225]),  # ImageNet std
+            transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]),
         ])
+
     return transform
 
 
 def create_data_loaders(
-    image_dir: str,
-    labels_file: str,
+    root_dir: str,
+    labels: Dict[str, str] = None,
     batch_size: int = 32,
     num_workers: int = 4,
-    image_size: Tuple[int, int] = (256, 256),
+    image_size: Tuple[int, int] = (224, 224),
     train_ratio: float = 0.75,
     val_ratio: float = 0.15,
     test_ratio: float = 0.10,
@@ -236,8 +308,8 @@ def create_data_loaders(
     Creates data loaders for training, validation, and testing.
 
     Args:
-        image_dir (str): Directory containing all images.
-        labels_file (str): Path to the JSON file containing labels.
+        root_dir (str): Root directory containing album folders.
+        labels (Dict[str, str], optional): Preloaded labels dictionary. If None, labels will be loaded from CSV files.
         batch_size (int): Number of samples per batch.
         num_workers (int): Number of subprocesses for data loading.
         image_size (Tuple[int, int]): Desired image size.
@@ -249,13 +321,41 @@ def create_data_loaders(
     Returns:
         Tuple[DataLoader, DataLoader, DataLoader]: Data loaders for train, validation, and test sets.
     """
-    # Load labels
-    labels = load_labels(labels_file)
+    # If labels not provided, load them from CSV files in album folders
+    if labels is None:
+        labels = {}
+        album_folders = [d for d in os.listdir(root_dir) if os.path.isdir(os.path.join(root_dir, d))]
+        
+        if not album_folders:
+            raise ValueError(f"No album folders found in {root_dir}")
+        
+        for album in album_folders:
+            album_dir = os.path.join(root_dir, album)
+            
+            # Check if album has a src directory
+            if not os.path.isdir(os.path.join(album_dir, 'src')):
+                continue
+                
+            # Look for rank_labels.csv in the album directory
+            csv_path = os.path.join(album_dir, 'rank_labels.csv')
+            if os.path.isfile(csv_path):
+                album_labels = load_csv_labels(csv_path, album)
+                labels.update(album_labels)
+                print(f"Loaded {len(album_labels)} labels from {csv_path}")
+            else:
+                print(f"No rank_labels.csv found in {album_dir}")
+    
+    if not labels:
+        raise ValueError("No valid labels found in any album.")
+    
+    print(f"Total label pairs: {len(labels)}")
 
     # Split dataset
     train_labels, val_labels, test_labels = split_dataset(
         labels, train_ratio, val_ratio, test_ratio, random_state
     )
+    
+    print(f"Split into {len(train_labels)} training, {len(val_labels)} validation, and {len(test_labels)} test pairs")
 
     # Define transforms
     train_transform = get_data_transforms(image_size=image_size, augment=True)
@@ -263,13 +363,13 @@ def create_data_loaders(
 
     # Create dataset instances
     train_dataset = PreferenceDataset(
-        image_dir=image_dir, labels=train_labels, transform=train_transform
+        root_dir=root_dir, labels=train_labels, transform=train_transform
     )
     val_dataset = PreferenceDataset(
-        image_dir=image_dir, labels=val_labels, transform=val_test_transform
+        root_dir=root_dir, labels=val_labels, transform=val_test_transform
     )
     test_dataset = PreferenceDataset(
-        image_dir=image_dir, labels=test_labels, transform=val_test_transform
+        root_dir=root_dir, labels=test_labels, transform=val_test_transform
     )
 
     # Create data loaders
