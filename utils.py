@@ -4,13 +4,13 @@ import time
 
 import torch
 
-from model import ViTRanker
+from model import IMLRankModel
 
 def log_print(message):
     print(message)
     logging.info(message)
 
-def get_model_by_name(device: torch.device, directory: str, name: str) -> ViTRanker | None:
+def get_model_by_name(device: torch.device, directory: str, name: str) -> IMLRankModel | None:
     """
     Load a model by its name from the specified directory and move it to the specified device.
     
@@ -20,10 +20,10 @@ def get_model_by_name(device: torch.device, directory: str, name: str) -> ViTRan
         name (str): Name prefix of the model file to load.
         
     Returns:
-        ViTRanker | None: Loaded model or None if no matching model is found.
+        IMLRankModel | None: Loaded model or None if no matching model is found.
     """
     
-    model = ViTRanker()  # Initialize ViT model architecture
+    model = IMLRankModel()  # Initialize ViT model architecture
 
     for file in os.listdir(directory):
         if file.startswith(name):
@@ -39,7 +39,7 @@ def get_model_by_name(device: torch.device, directory: str, name: str) -> ViTRan
     
     return model
 
-def get_model_by_latest(device: torch.device, directory: str|None=None) -> ViTRanker | None:
+def get_model_by_latest(device: torch.device, directory: str|None=None) -> IMLRankModel | None:
     """
     Load a model whose model name is the latest time from the specified directory and move it to the specified device.
     Priority is given to 'rank_model.pth' if it exists.
@@ -49,9 +49,9 @@ def get_model_by_latest(device: torch.device, directory: str|None=None) -> ViTRa
         directory (str | None): Directory containing the model files. If None, returns a new model.
         
     Returns:
-        ViTRanker | None: Loaded model or None if no models are found in the directory.
+        IMLRankModel | None: Loaded model or None if no models are found in the directory.
     """
-    model = ViTRanker()
+    model = IMLRankModel()
 
     if directory and os.path.exists(directory):
         # First check if rank_model.pth exists

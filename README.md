@@ -1,83 +1,120 @@
 # iml-ranker
 
-IML-Ranker is a Python library for ranking images using Vision Transformer (ViT) machine learning and the Elo rating system. It collects user preferences via pairwise comparisons, extracts image features, and trains models to predict preferences, enabling efficient identification of top-rated images.
+IML-Ranker is a Python application for ranking images using Vision Transformer (ViT) machine learning and the Elo rating system. It facilitates an iterative process of labeling, training, ranking, and extracting images through different stages.
 
-## Directory Structure
+## Project and Stage-Based Workflow
 
-The system now uses an album-based directory structure:
+The system operates on a project directory, with data and models organized into stages. Each stage typically represents a step in the image selection and refinement process.
+
+**Directory Structure:**
+
+A typical project directory (`<project_dir>`) might look like this:
 
 ```
-root_directory/
-├── album1/
-│   ├── src/                # Original source images
-│   ├── src_culled/         # Selected/kept images (populated after culling)
-│   ├── src_cropped/        # Cropped images used for ranking
-│   ├── src_ranked/         # Extracted top-ranked images
-│   ├── rankings.json       # Ranking results
-│   └── cull_labels.csv     # Labeling data in CSV format
-├── album2/
-│   ├── ...
-├── ...
-├── models/                 # Trained models directory
-└── rank_model.pth          # Main trained model
+<project_dir>/
+├── stage_0/                  # Initial set of images for labeling/ranking
+│   ├── image1.jpg
+│   └── image2.png
+├── stage_0_rank_labels.csv   # Labels generated for images in stage_0
+├── stage_0_rank_model.pth    # Model trained using labels from stage_0
+├── stage_0_rankings.csv      # Ranking scores for images in stage_0
+├── stage_1/                  # Images for the next stage (e.g., extracted from stage_0)
+│   ├── 001_image_ranked_best.jpg
+│   └── extraction_info.txt   # Information about the extraction process into this stage
+├── stage_1_rank_labels.csv   # Labels for stage_1 images
+├── stage_1_rank_model.pth    # Model trained on stage_1 data
+├── stage_1_rankings.csv      # Rankings for stage_1 images
+└── ...                       # Further stages
 ```
 
-Each `cull_labels.csv` should have columns for image pairs and choices:
-- `image1`: First image filename/ID
-- `image2`: Second image filename/ID
-- `choice`: One of "left", "right", "both", or "neither"
+- **`stage_X/`**: Contains the source images for stage `X`.
+- **`stage_X_rank_labels.csv`**: CSV file storing pairwise comparison labels for images in `stage_X`. Columns are typically `img_1_id,img_2_id,rank` (where rank can be `left`, `right`, `both`, `neither`).
+- **`stage_X_rank_model.pth`**: The PyTorch model file trained using data from `stage_X`.
+- **`stage_X_rankings.csv`**: CSV file storing the Elo ranking scores for images in `stage_X`. Columns are `image,score`.
+- **`extraction_info.txt`**: Found in a `stage_Y` directory if it was created by the `extract.py` script from `stage_X` (where Y = X+1). Contains details about the extracted images.
 
 ## Usage
 
-### Labeling Images
+All scripts are run from the command line using Python.
+
+### 1. Labeling Images (`label.py`)
+
+Starts a web server for pairwise image labeling.
+
+**Command:**
 ```bash
-python label.py ALBUM_DIR
+python label.py --project <project_dir> [--stage <stage_number>]
 ```
 
-The command takes the following positional argument:
-- `ALBUM_DIR`: Directory containing the album images to be labeled.
+**Arguments:**
+- `--project <project_dir>`: (Required) Path to the project directory.
+- `--stage <stage_number>`: (Optional) The stage number (integer) whose images you want to label. Images will be sourced from `<project_dir>/stage_<stage_number>/`. If not provided, the script attempts to use the latest existing stage (highest `X` in `stage_X`). Labels are saved to `<project_dir>/stage_<stage_number>_rank_labels.csv`.
 
-This will start a web server to label images. Open a web browser and navigate to http://localhost:5000. A GUI will be displayed, allowing you to:
-1. Compare pairs of images
-2. Choose which image you prefer
-3. Label as "both good" or "neither good"
+**Functionality:**
+- Launches a Flask web application (default: `http://localhost:5000`).
+- Displays pairs of images from the specified stage directory.
+- Allows users to choose "left is better", "right is better", "both are good", or "neither is good".
+- Saves labeling choices to the corresponding `_rank_labels.csv` file.
 
-The module will look for images in the `ALBUM_DIR/src_culled` directory and save the labels in `ALBUM_DIR/rank_labels.csv`.
+### 2. Training a Model (`train.py`)
 
-## Train
+Trains a Vision Transformer model based on the collected labels.
 
-Train the model using all labeled data across multiple albums:
-
-```
-python train.py -r "path to root directory" -e "epochs (default: 256)"
-```
-
-The trained model will be saved as `rank_model.pth` in the root directory.
-
-## Rank
-
-Rank images within one or all albums:
-
-```
-python rank.py -r "path to root directory" -a "album name (optional)" -c "comparisons (default: 10)"
+**Command:**
+```bash
+python train.py --project <project_dir> [--stage <stage_number>] [-e <epochs>]
 ```
 
-If the `-a` parameter is omitted, all albums in the root directory will be processed.
+**Arguments:**
+- `--project <project_dir>`: (Required) Path to the project directory.
+- `--stage <stage_number>`: (Optional) The stage number (integer) whose labels and images will be used for training. It reads labels from `<project_dir>/stage_<stage_number>_rank_labels.csv` and images from `<project_dir>/stage_<stage_number>/`. If not provided, the script uses the latest existing stage.
+- `-e <epochs>`, `--epochs <epochs>`: (Optional) Number of training epochs. Default is 256.
 
-The ranking process will:
-1. Load the trained model (looking first in root directory, then in models subdirectory)
-2. Use images from the `src_cropped` directory for each album
-3. Save the ranking results as `rankings.json` in each album directory
+**Functionality:**
+- Loads image data and corresponding labels for the specified stage.
+- Trains an `IMLRankModel`.
+- Saves the trained model to `<project_dir>/stage_<stage_number>_rank_model.pth`.
+- Logs training progress to `<project_dir>/stage_<stage_number>_rank_log.csv`.
 
-## Extract
+### 3. Ranking Images (`rank.py`)
 
-Extract the top-ranked images from a specific album:
+Uses a trained model to rank images within a specific stage using the Elo rating system.
 
+**Command:**
+```bash
+python rank.py --project <project_dir> [--stage <stage_number>] [--comparisons <num>] [--batch_size <size>] [--verbose]
 ```
-python extract.py -r "path to root directory" -a "album name" -c "count of images to extract"
+
+**Arguments:**
+- `--project <project_dir>`: (Required) Path to the project directory.
+- `--stage <stage_number>`: (Optional) The stage number (integer) whose images will be ranked. It loads the model `<project_dir>/stage_<stage_number>_rank_model.pth` and uses images from `<project_dir>/stage_<stage_number>/`. If not provided, the script uses the latest existing stage.
+- `--comparisons <num>`: (Optional) Number of pairwise comparisons to simulate per image for Elo rating. Default is 8.
+- `--batch_size <size>`: (Optional) Batch size for model inference during comparisons. Default is 8.
+- `--verbose`: (Optional) Enable verbose logging output.
+
+**Functionality:**
+- Loads the pre-trained model for the specified stage.
+- Loads images from the specified stage directory.
+- Simulates pairwise comparisons using the model's predictions.
+- Calculates Elo ratings for each image.
+- Saves the final rankings to `<project_dir>/stage_<stage_number>_rankings.csv`.
+
+### 4. Extracting Top Images (`extract.py`)
+
+Copies the top-ranked images from a given stage to a new stage directory.
+
+**Command:**
+```bash
+python extract.py --project <project_dir> --count <num_images> [--stage <stage_number>]
 ```
 
-This will:
-1. Read the rankings from `rankings.json` in the album directory
-2. Copy the top-ranked images from the `src_cropped` directory 
-3. Save them to the `src_ranked` directory within the album folder
+**Arguments:**
+- `--project <project_dir>`: (Required) Path to the project directory.
+- `--count <num_images>`: (Required) Number of top-ranked images to extract.
+- `--stage <stage_number>`: (Optional) The stage number (integer) from which to extract images. It reads rankings from `<project_dir>/stage_<stage_number>_rankings.csv` and images from `<project_dir>/stage_<stage_number>/`. If not provided, the script uses the latest existing stage.
+
+**Functionality:**
+- Reads the rankings from the specified stage's `_rankings.csv` file.
+- Copies the top `<num_images>` images from the source stage directory (`<project_dir>/stage_<stage_number>/`) to a new directory: `<project_dir>/stage_<stage_number + 1>/`.
+- The output directory is cleared if it already exists.
+- Creates an `extraction_info.txt` file in the new stage directory detailing the extracted images and source.

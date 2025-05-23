@@ -68,7 +68,7 @@ class BasicBlock(nn.Module):
 
         return out
 
-class ViTRanker(nn.Module):
+class IMLRankModel(nn.Module):
     """
     Vision Transformer (ViT) based model for image ranking.
     
@@ -78,13 +78,13 @@ class ViTRanker(nn.Module):
 
     def __init__(self, num_classes=4, pretrained=True):
         """
-        Initializes the ViTRanker model.
+        Initializes the IMLRankModel model.
 
         Args:
             num_classes (int, optional): Number of output classes. Defaults to 4.
             pretrained (bool, optional): Whether to use pretrained weights. Defaults to True.
         """
-        super(ViTRanker, self).__init__()
+        super(IMLRankModel, self).__init__()
         
         # Load pre-trained ViT model
         if pretrained:
@@ -107,7 +107,7 @@ class ViTRanker(nn.Module):
 
     def forward(self, img1, img2):
         """
-        Forward pass of the ViTRanker.
+        Forward pass of the IMLRankModel.
 
         Args:
             img1 (torch.Tensor): Tensor of the first image batch (batch_size, 3, H, W).

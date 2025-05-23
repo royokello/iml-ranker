@@ -1,10 +1,8 @@
 import argparse
-import json
-import logging
+import csv
 import random
 import numpy as np
 import torch
-from utils import get_model_by_latest, get_model_by_name, log_print
 import os
 from PIL import Image
 from torchvision import transforms
@@ -49,77 +47,83 @@ def elo_rating(rating1, rating2, outcome, k=32):
     return new_rating1, new_rating2
 
 
-def main(root_dir: str, album: str = None, comparisons: int = 10, model_name: str = None):
+def get_latest_stage(project_dir):
+    """
+    Find the latest stage in the project directory.
+    
+    Args:
+        project_dir (str): Path to the project directory.
+        
+    Returns:
+        int: The latest stage number.
+    """
+    # Get all directories matching stage_*
+    stage_dirs = [d for d in os.listdir(project_dir) if os.path.isdir(os.path.join(project_dir, d)) and d.startswith('stage_')]
+    
+    if not stage_dirs:
+        raise ValueError(f"No stage directories found in {project_dir}. Directories should be named 'stage_{{stage}}'")
+    
+    # Extract stage numbers and find the maximum
+    stage_numbers = []
+    for dir_name in stage_dirs:
+        try:
+            # Extract the stage number after 'stage_'
+            stage_num = int(dir_name.split('_', 1)[1])
+            stage_numbers.append(stage_num)
+        except (IndexError, ValueError):
+            continue
+    
+    if not stage_numbers:
+        raise ValueError(f"Could not parse stage numbers from directories in {project_dir}")
+    
+    # Return the highest stage number
+    return max(stage_numbers)
+
+
+def main(project_dir: str, stage: int = None, comparisons: int = 10, batch_size: int = 8, verbose: bool = False):
     """
     Ranks images based on pairwise comparisons using a trained Vision Transformer (ViT) and Elo ratings.
 
     Args:
-        root_dir (str): Root directory containing album folders.
-        album (str, optional): Specific album to rank. If None, all albums are processed.
+        project_dir (str): Project directory containing stage folders and models.
+        stage (int, optional): Specific stage to use. If None, the latest stage will be used.
         comparisons (int): Number of comparisons to perform per image.
-        model_name (str, optional): Specify model. If None, tries to use 'rank_model' or falls back to the latest model.
     """
-    log_filepath = os.path.join(root_dir, 'ranking.log')
-    logging.basicConfig(
-        filename=log_filepath,
-        level=logging.INFO,
-        format='%(asctime)s - %(levelname)s - %(message)s',
-        datefmt='%Y-%m-%d %H:%M:%S'
-    )
+    # If stage is not provided, use the latest stage
+    if stage is None:
+        try:
+            stage = get_latest_stage(project_dir)
+            print(f"Using latest stage: {stage}")
+        except ValueError as e:
+            print(f"Error finding latest stage: {e}")
+            return
     
-    log_print("Ranking started...")
-
-    # Find the model directory
-    models_dir = os.path.join(root_dir, 'models')
-    if not os.path.exists(models_dir):
-        # Create it if it doesn't exist
-        os.makedirs(models_dir, exist_ok=True)
+    
+    print(f"Ranking started for stage_{stage}...")
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    log_print(f"Using device: {device}")
+    print(f"Using device: {device}")
 
-    # Try to load the model
-    model = None
+    # Load the model for the specified stage
+    model_path = os.path.join(project_dir, f"stage_{stage}_rank_model.pth")
     
-    if model_name:
-        # If a specific model name is provided, use that
-        model = get_model_by_name(device=device, directory=models_dir, name=model_name)
-        if model:
-            log_print(f"Using specified model: {model_name}")
-    else:
-        # First try to use rank_model.pth directly in the root directory (where train.py saves it)
-        root_model_path = os.path.join(root_dir, 'rank_model.pth')
-        if os.path.exists(root_model_path):
-            try:
-                from model import ViTRanker
-                model = ViTRanker().to(device)
-                model.load_state_dict(torch.load(root_model_path, map_location=device))
-                log_print(f"Using rank_model.pth from root directory")
-            except Exception as e:
-                log_print(f"Failed to load rank_model.pth from root directory: {e}")
-                model = None
-        
-        # If not found in the root, try the models subdirectory
-        if model is None:
-            rank_model_path = os.path.join(models_dir, 'rank_model.pth')
-            if os.path.exists(rank_model_path):
-                try:
-                    from model import ViTRanker
-                    model = ViTRanker().to(device)
-                    model.load_state_dict(torch.load(rank_model_path, map_location=device))
-                    log_print(f"Using rank_model.pth from models subdirectory")
-                except Exception as e:
-                    log_print(f"Failed to load rank_model.pth from models subdirectory: {e}")
-                    model = None
+    if not os.path.exists(model_path):
+        print(f"Error: Model file not found at {model_path}")
+        return
     
-    # If model is still None, fall back to latest model
-    if model is None:
-        model = get_model_by_latest(device=device, directory=models_dir)
-        if model:
-            log_print("Using latest available model")
+    try:
+        from model import IMLRankModel
+        model = IMLRankModel().to(device)
+        model.load_state_dict(torch.load(model_path, map_location=device))
+        print(f"Successfully loaded model from {model_path}")
+    except Exception as e:
+        print(f"Failed to load model from {model_path}: {e}")
+        return
     
-    if model is None:
-        log_print("No model found. Please train a model first.")
+    # Set up the stage directory where images are stored
+    stage_dir = os.path.join(project_dir, f"stage_{stage}")
+    if not os.path.exists(stage_dir):
+        print(f"Error: Stage directory not found at {stage_dir}")
         return
     
     model.eval()
@@ -132,125 +136,152 @@ def main(root_dir: str, album: str = None, comparisons: int = 10, model_name: st
                              std=[0.229, 0.224, 0.225]),
     ])
 
-    # Process albums
-    if album:
-        albums_to_process = [album]
-    else:
-        # Find all album directories
-        albums_to_process = [d for d in os.listdir(root_dir) 
-                            if os.path.isdir(os.path.join(root_dir, d)) 
-                            and os.path.exists(os.path.join(root_dir, d, 'src'))]
+    # Process the stage directory
+    albums_to_process = [f"stage_{stage}"]
     
     if not albums_to_process:
-        log_print("No valid albums found.")
+        print("No valid albums found.")
         return
     
-    log_print(f"Found {len(albums_to_process)} albums to process.")
+    print(f"Found {len(albums_to_process)} albums to process.")
 
-    # Process each album
-    for current_album in albums_to_process:
-        log_print(f"Processing album: {current_album}")
-        
-        # Get all images from the src directory
-        src_dir = os.path.join(root_dir, current_album, 'src_cropped')
-        if not os.path.exists(src_dir):
-            log_print(f"Source directory not found for album {current_album}, skipping.")
-            continue
-        
-        # Find all image files with multiple extensions
-        image_files = []
-        for ext in ['.png', '.jpg', '.jpeg']:
-            image_files.extend(glob.glob(os.path.join(src_dir, f'*{ext}')))
-            image_files.extend(glob.glob(os.path.join(src_dir, f'*{ext.upper()}')))
-        
-        # Extract just the filenames
-        image_files = [os.path.basename(f) for f in image_files]
-        
-        if len(image_files) < 2:
-            log_print(f"Not enough images to rank in album {current_album}.")
-            continue
-
-        log_print(f"Found {len(image_files)} images for ranking in album {current_album}.")
-
-        # Load and preprocess all images
-        images = {}
-        for img_file in image_files:
-            img_path = os.path.join(src_dir, img_file)
-            try:
-                image = Image.open(img_path).convert("RGB")
-                image_tensor = transform(image).unsqueeze(0)  # Shape: (1, 3, 224, 224)
-                images[img_file] = image_tensor
-            except Exception as e:
-                log_print(f"Error loading image '{img_file}': {e}")
-
-        # Initialize Elo ratings
-        initial_rating = 1500.0
-        rankings = {image_file: initial_rating for image_file in images.keys()}
-
-        # Perform pairwise comparisons
-        for i, img1 in enumerate(list(images.keys())):
-            log_print(f"Comparing image {i + 1}/{len(images)}: {img1}")
+    # Process the stage directory
+    current_album = f"stage_{stage}"
+    print(f"Processing stage: {current_album}")
+    
+    # Set up source directory
+    src_dir = stage_dir
             
-            img1_tensor = images[img1].to(device)
+    if not os.path.exists(src_dir):
+        print(f"Stage directory not found at {src_dir}")
+        return
+    
+    # Get all entry names (files and directories) from the source directory.
+    entry_names = os.listdir(src_dir)
+
+    # Load and preprocess all actual image files from these entries
+    images = {}
+    for entry_name in entry_names:
+        full_path = os.path.join(src_dir, entry_name)
+        try:
+            # Attempt to open as an image. This will fail for directories or non-image files.
+            image = Image.open(full_path).convert("RGB")
+            # If successful, it's an image we can process.
+            image_tensor = transform(image).unsqueeze(0)  # Shape: (1, 3, 224, 224)
+            img_basename = os.path.basename(full_path)
+            images[img_basename] = image_tensor
+        except (IOError, OSError) as e: # Catches IsADirectoryError, FileNotFoundError, UnidentifiedImageError from PIL etc.
+            if verbose: # verbose is an argument to main()
+                print(f"Skipping '{entry_name}': Not a loadable image file (or is a directory). Details: {e}")
+            # Silently skip if not verbose, or if it's an expected non-image file type.
+    
+    print(f"Found {len(images)} valid images for ranking in stage {stage}.")
+    if len(images) < 2:
+        print(f"Not enough valid images to rank in stage {stage} (found {len(images)}, need at least 2).")
+        return
+
+    # Initialize Elo ratings
+    initial_rating = 1500.0
+    rankings = {image_file: initial_rating for image_file in images.keys()}
+
+    # Perform pairwise comparisons
+    for i, img1_name in enumerate(list(images.keys())):
+        print(f"{i + 1}/{len(images)}")
         
-            # Select a random subset of images to compare with img1
-            possible_imgs = list(images.keys())
-            possible_imgs.remove(img1)
-            img_comparisons = random.sample(possible_imgs, min(comparisons, len(possible_imgs)))
+        img1_tensor_single = images[img1_name].to(device) # This is (1, C, H, W)
+    
+        # Select a random subset of images to compare with img1_name
+        possible_comparison_img_names = list(images.keys())
+        possible_comparison_img_names.remove(img1_name)
+        # Ensure we have enough images for the requested number of comparisons
+        num_to_sample = min(comparisons, len(possible_comparison_img_names))
+        if num_to_sample == 0:
+            continue
+            
+        selected_comparison_img_names = random.sample(possible_comparison_img_names, num_to_sample)
 
-            for img2 in img_comparisons:
-                img2_tensor = images[img2].to(device)
+        # Process comparisons in batches
+        for batch_start_idx in range(0, len(selected_comparison_img_names), batch_size):
+            batch_end_idx = min(batch_start_idx + batch_size, len(selected_comparison_img_names))
+            current_batch_img_names = selected_comparison_img_names[batch_start_idx:batch_end_idx]
+            
+            if not current_batch_img_names:
+                continue
 
-                with torch.no_grad():
-                    try:
-                        output = model(img1_tensor, img2_tensor)  # Expected shape: (1, 4)
-                        probabilities = torch.softmax(output, dim=1).cpu().numpy()[0]  # Shape: (4,)
-                        classes = ['left', 'right', 'both', 'neither']
+            # Prepare batch tensors
+            # img1_tensor_single is (1, C, H, W), repeat it for the batch
+            # For a batch of size N, img1_batch should be (N, C, H, W)
+            img1_batch = img1_tensor_single.repeat(len(current_batch_img_names), 1, 1, 1)
+            
+            # img2_batch should also be (N, C, H, W)
+            img2_tensors_list = [images[name].to(device) for name in current_batch_img_names]
+            img2_batch = torch.cat(img2_tensors_list, dim=0)
 
-                        # Determine outcome based on highest probability
+            with torch.no_grad():
+                try:
+                    # Model expects two batches of images: (N, C, H, W), (N, C, H, W)
+                    # Output should be (N, 4)
+                    batch_outputs = model(img1_batch, img2_batch)
+                    batch_probabilities = torch.softmax(batch_outputs, dim=1).cpu().numpy() # Shape: (N, 4)
+                    
+                    classes = ['left', 'right', 'both', 'neither']
+
+                    for batch_idx, img2_name in enumerate(current_batch_img_names):
+                        probabilities = batch_probabilities[batch_idx] # Shape: (4,)
                         predicted_idx = np.argmax(probabilities)
                         outcome = classes[predicted_idx]
 
-                        log_print(f"  Compared '{img1}' vs '{img2}' - Outcome: {outcome}")
+                        if verbose:
+                            print(f"  Compared '{img1_name}' vs '{img2_name}' - Outcome: {outcome} (Probs: {probabilities})")
 
                         # Update Elo ratings
-                        rating1 = rankings[img1]
-                        rating2 = rankings[img2]
+                        rating1 = rankings[img1_name]
+                        rating2 = rankings[img2_name]
 
                         new_rating1, new_rating2 = elo_rating(rating1, rating2, outcome)
-                        rankings[img1] = new_rating1
-                        rankings[img2] = new_rating2
+                        rankings[img1_name] = new_rating1
+                        rankings[img2_name] = new_rating2
 
-                    except Exception as e:
-                        log_print(f"  Error during comparison '{img1}' vs '{img2}': {e}")
+                except Exception as e:
+                    print(f"  Error during batched comparison for '{img1_name}' vs batch {current_batch_img_names}: {e}")
+                    # Optionally, decide if you want to skip the rest of this batch or img1_name
+                    # For now, we'll log and continue with the next batch/image
+                    break # Break from inner loop (batches for current img1_name)
 
-        # Sort images based on final ratings
-        sorted_rankings = sorted(rankings.items(), key=lambda item: item[1], reverse=True)
-        log_print(f"Ranking for album {current_album} completed.")
+    # Sort images based on final ratings
+    sorted_rankings = sorted(rankings.items(), key=lambda item: item[1], reverse=True)
+    print(f"Ranking for stage {stage} completed.")
 
-        # Display rankings
+    # Display rankings
+    if verbose:
+        print("\nFinal Rankings:")
         for rank, (image_file, score) in enumerate(sorted_rankings, 1):
-            log_print(f"Rank {rank}: {image_file} with score {score:.2f}")
+            print(f"  Rank {rank}: {image_file} (Score: {score:.2f})")
 
 
-        # Save rankings to a JSON file
-        rankings_path = os.path.join(root_dir, current_album, 'rankings.json')
-        try:
-            with open(rankings_path, 'w') as f:
-                json.dump(sorted_rankings, f, indent=4)
-            log_print(f"Rankings saved to '{rankings_path}'.")
-        except Exception as e:
-            log_print(f"Error saving rankings: {e}")
+    # Save rankings to a CSV file
+    rankings_path = os.path.join(project_dir, f"stage_{stage}_rankings.csv")
+            
+    try:
+        with open(rankings_path, 'w', newline='') as f:
+            writer = csv.writer(f)
+            writer.writerow(["image", "score"])  # Header row
+            for rank, (image_file, score) in enumerate(sorted_rankings, 1):
+                writer.writerow([image_file, f"{score:.2f}"])
+        print(f"\nRankings saved to '{rankings_path}'.")
+    except Exception as e:
+        print(f"\nError saving rankings to CSV: {e}")
 
-    log_print("All albums processing completed.")
+    print("Stage processing completed.")
 
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="Rank Images in Album Structure")
-    parser.add_argument("-r", "--root_dir", type=str, required=True, help="Root directory containing album folders.")
-    parser.add_argument("-a", "--album", type=str, help="Specific album to process. If not provided, all albums are processed.")
-    parser.add_argument("-c", "--comparisons", type=int, default=10, help="Number of comparisons per image (default: 10).")
-    parser.add_argument("-n", "--model_name", type=str, help="Specify model name. If not provided, the latest model will be used.")
+    parser = argparse.ArgumentParser(description="Rank Images using trained model")
+    parser.add_argument("--project", type=str, required=True, help="Project directory path where stage folders and models are stored.")
+    parser.add_argument("--stage", type=int, help="Stage to use. If not provided, the latest stage will be used. Stages are formatted as 'stage_{stage}'.")
+    parser.add_argument("--comparisons", type=int, default=8, help="Number of comparisons per image (default: 8).")
+    parser.add_argument("--batch_size", type=int, default=8, help="Batch size for comparisons (default: 8).")
+    parser.add_argument("--verbose", action="store_true", help="Enable verbose logging.")
     
     args = parser.parse_args()
-    main(args.root_dir, args.album, args.comparisons, model_name=args.model_name)
+    main(args.project, args.stage, args.comparisons, args.batch_size, args.verbose)

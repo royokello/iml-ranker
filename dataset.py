@@ -19,7 +19,7 @@ LABEL_MAP = {
     "neither": 3
 }
 
-class PreferenceDataset(Dataset):
+class IMLRankDataset(Dataset):
     """
     PyTorch Dataset for Pairwise Image Preference Learning.
 
@@ -37,7 +37,7 @@ class PreferenceDataset(Dataset):
         transform: Optional[transforms.Compose] = None,
     ):
         """
-        Initializes the PreferenceDataset.
+        Initializes the IMLRankDataset.
 
         Args:
             root_dir (str): Root directory containing album folders with src/ images.
@@ -128,13 +128,13 @@ class PreferenceDataset(Dataset):
         
         if album:
             for ext in extensions:
-                # Check in src directory
-                path = os.path.join(self.root_dir, album, 'src', f"{image_id}{ext}")
+                # Construct path directly in the album directory (no 'src' subdirectory)
+                path = os.path.join(self.root_dir, f"{image_id}{ext}")
                 if os.path.isfile(path):
                     return path
             
             # If not found, raise an error
-            raise FileNotFoundError(f"Image file for ID '{image_id}' in album '{album}' not found.")
+            raise FileNotFoundError(f"Image file for ID '{image_id}' in album '{album}' not found in {self.root_dir}.")
         else:
             # Old format fallback
             for ext in extensions:
@@ -214,49 +214,43 @@ def load_csv_labels(csv_file: str, album: str) -> Dict[str, str]:
 def split_dataset(
     labels: Dict[str, str],
     train_ratio: float = 0.8,
-    val_ratio: float = 0.1,
-    test_ratio: float = 0.1,
+    val_ratio: float = 0.2,
     random_state: int = 42,
-) -> Tuple[Dict[str, str], Dict[str, str], Dict[str, str]]:
+) -> Tuple[Dict[str, str], Dict[str, str]]: # Return only train and val labels
     """
-    Splits the dataset into training, validation, and test sets.
+    Splits the dataset into training and validation sets.
 
     Args:
         labels (Dict[str, str]): Entire label dictionary.
         train_ratio (float): Proportion of data to use for training.
         val_ratio (float): Proportion of data to use for validation.
-        test_ratio (float): Proportion of data to use for testing.
         random_state (int): Seed for random number generator.
 
     Returns:
-        Tuple[Dict[str, str], Dict[str, str], Dict[str, str]]: Dictionaries for train, validation, and test sets.
+        Tuple[Dict[str, str], Dict[str, str]]: Dictionaries for train and validation sets.
     """
-    if not abs(train_ratio + val_ratio + test_ratio - 1.0) < 1e-6:
-        raise ValueError("Train, validation, and test ratios must sum to 1.")
+    if not (0 < train_ratio < 1 and 0 < val_ratio < 1 and abs(train_ratio + val_ratio - 1.0) < 1e-6):
+        raise ValueError("Train and validation ratios must be between 0 and 1, and sum to 1.")
 
     import random
     random.seed(random_state)
     
-    pairs = list(labels.keys())
-    random.shuffle(pairs)
+    all_keys = list(labels.keys())
+    random.shuffle(all_keys)
     
     # Calculate split indices
-    n_samples = len(pairs)
-    test_size = int(n_samples * test_ratio)
-    val_size = int(n_samples * val_ratio)
-    train_size = n_samples - test_size - val_size
-    
-    # Split the data
-    train_pairs = pairs[:train_size]
-    val_pairs = pairs[train_size:train_size + val_size]
-    test_pairs = pairs[train_size + val_size:]
-    
-    # Create the dictionaries
-    train_labels = {pair: labels[pair] for pair in train_pairs}
-    val_labels = {pair: labels[pair] for pair in val_pairs}
-    test_labels = {pair: labels[pair] for pair in test_pairs}
+    num_samples = len(all_keys)
+    train_end = int(train_ratio * num_samples)
 
-    return train_labels, val_labels, test_labels
+    # Create splits
+    train_keys = all_keys[:train_end]
+    val_keys = all_keys[train_end:] # The rest goes to validation
+
+    # Create label dictionaries for each split
+    train_labels = {key: labels[key] for key in train_keys}
+    val_labels = {key: labels[key] for key in val_keys}
+
+    return train_labels, val_labels
 
 
 def get_data_transforms(
@@ -296,14 +290,14 @@ def get_data_transforms(
 def create_data_loaders(
     root_dir: str,
     labels: Dict[str, str] = None,
+    labels_csv: str = None,
     batch_size: int = 32,
     num_workers: int = 4,
     image_size: Tuple[int, int] = (224, 224),
-    train_ratio: float = 0.75,
-    val_ratio: float = 0.15,
-    test_ratio: float = 0.10,
+    train_ratio: float = 0.8, # Default to 80/20 split
+    val_ratio: float = 0.2,
     random_state: int = 42,
-) -> Tuple[DataLoader, DataLoader, DataLoader]:
+) -> Tuple[DataLoader, DataLoader]: # Return only train and val loaders
     """
     Creates data loaders for training, validation, and testing.
 
@@ -321,29 +315,39 @@ def create_data_loaders(
     Returns:
         Tuple[DataLoader, DataLoader, DataLoader]: Data loaders for train, validation, and test sets.
     """
-    # If labels not provided, load them from CSV files in album folders
+    # If labels not provided, try loading from direct CSV path or from album folders
     if labels is None:
         labels = {}
-        album_folders = [d for d in os.listdir(root_dir) if os.path.isdir(os.path.join(root_dir, d))]
         
-        if not album_folders:
-            raise ValueError(f"No album folders found in {root_dir}")
-        
-        for album in album_folders:
-            album_dir = os.path.join(root_dir, album)
+        # If a specific labels CSV file is provided, use it
+        if labels_csv and os.path.isfile(labels_csv):
+            # Extract folder name from root_dir to use as the album name
+            album_name = os.path.basename(os.path.normpath(root_dir))
+            album_labels = load_csv_labels(labels_csv, album_name)
+            labels.update(album_labels)
+            print(f"Loaded {len(album_labels)} labels from {labels_csv}")
+        else:
+            # Fallback to searching for CSVs in album folders
+            album_folders = [d for d in os.listdir(root_dir) if os.path.isdir(os.path.join(root_dir, d))]
             
-            # Check if album has a src directory
-            if not os.path.isdir(os.path.join(album_dir, 'src')):
-                continue
+            if not album_folders:
+                raise ValueError(f"No album folders found in {root_dir}")
+            
+            for album in album_folders:
+                album_dir = os.path.join(root_dir, album)
                 
-            # Look for rank_labels.csv in the album directory
-            csv_path = os.path.join(album_dir, 'rank_labels.csv')
-            if os.path.isfile(csv_path):
-                album_labels = load_csv_labels(csv_path, album)
-                labels.update(album_labels)
-                print(f"Loaded {len(album_labels)} labels from {csv_path}")
-            else:
-                print(f"No rank_labels.csv found in {album_dir}")
+                # Check if album has a src directory
+                if not os.path.isdir(os.path.join(album_dir, 'src')):
+                    continue
+                    
+                # Look for rank_labels.csv in the album directory
+                csv_path = os.path.join(album_dir, 'rank_labels.csv')
+                if os.path.isfile(csv_path):
+                    album_labels = load_csv_labels(csv_path, album)
+                    labels.update(album_labels)
+                    print(f"Loaded {len(album_labels)} labels from {csv_path}")
+                else:
+                    print(f"No rank_labels.csv found in {album_dir}")
     
     if not labels:
         raise ValueError("No valid labels found in any album.")
@@ -351,27 +355,23 @@ def create_data_loaders(
     print(f"Total label pairs: {len(labels)}")
 
     # Split dataset
-    train_labels, val_labels, test_labels = split_dataset(
-        labels, train_ratio, val_ratio, test_ratio, random_state
+    train_labels, val_labels = split_dataset(
+        labels, train_ratio, val_ratio, random_state
     )
     
-    print(f"Split into {len(train_labels)} training, {len(val_labels)} validation, and {len(test_labels)} test pairs")
+    print(f"Split into {len(train_labels)} training and {len(val_labels)} validation pairs")
 
     # Define transforms
     train_transform = get_data_transforms(image_size=image_size, augment=True)
     val_test_transform = get_data_transforms(image_size=image_size, augment=False)
 
     # Create dataset instances
-    train_dataset = PreferenceDataset(
+    train_dataset = IMLRankDataset(
         root_dir=root_dir, labels=train_labels, transform=train_transform
     )
-    val_dataset = PreferenceDataset(
+    val_dataset = IMLRankDataset(
         root_dir=root_dir, labels=val_labels, transform=val_test_transform
     )
-    test_dataset = PreferenceDataset(
-        root_dir=root_dir, labels=test_labels, transform=val_test_transform
-    )
-
     # Create data loaders
     train_loader = DataLoader(
         train_dataset, batch_size=batch_size, shuffle=True, num_workers=num_workers, pin_memory=True
@@ -379,8 +379,5 @@ def create_data_loaders(
     val_loader = DataLoader(
         val_dataset, batch_size=batch_size, shuffle=False, num_workers=num_workers, pin_memory=True
     )
-    test_loader = DataLoader(
-        test_dataset, batch_size=batch_size, shuffle=False, num_workers=num_workers, pin_memory=True
-    )
 
-    return train_loader, val_loader, test_loader
+    return train_loader, val_loader

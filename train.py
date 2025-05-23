@@ -1,5 +1,6 @@
 # train.py
 
+import csv
 import os
 import argparse
 import copy
@@ -14,8 +15,7 @@ import torch.optim as optim
 from torch.utils.data import DataLoader
 
 from dataset import create_data_loaders
-from model import ViTRanker
-from utils import get_model_by_name
+from model import IMLRankModel
 
 def parse_args():
     """
@@ -27,10 +27,17 @@ def parse_args():
     parser = argparse.ArgumentParser(description="Train a Vision Transformer (ViT) for Image Culling.")
     
     parser.add_argument(
-        '-r', '--root_dir',
+        '--project',
         type=str,
         required=True,
-        help='Path to the root directory containing album folders.'
+        help='Path to the project directory where files are kept.'
+    )
+    
+    parser.add_argument(
+        '--stage',
+        type=str,
+        required=False,
+        help='Stage number to use. If not provided, the latest stage will be used. Stages are formatted as "stage_{stage}".'
     )
     
     parser.add_argument(
@@ -66,7 +73,7 @@ def train_one_epoch(model, dataloader, criterion, optimizer, device):
     Trains the model for one epoch.
     
     Args:
-        model (nn.Module): The ViTRanker model.
+        model (nn.Module): The IMLRankModel model.
         dataloader (DataLoader): DataLoader for training data.
         criterion (nn.Module): Loss function.
         optimizer (optim.Optimizer): Optimizer.
@@ -104,7 +111,7 @@ def validate(model, dataloader, criterion, device):
     Validates the model.
     
     Args:
-        model (nn.Module): The ViTRanker model.
+        model (nn.Module): The IMLRankModel model.
         dataloader (DataLoader): DataLoader for validation data.
         criterion (nn.Module): Loss function.
         device (torch.device): Device to validate on.
@@ -150,28 +157,61 @@ def load_all_labels(root_dir):
     # We'll use an empty dictionary here and let dataset.py load the CSV files
     return {}
 
-def find_all_images(root_dir):
+def get_latest_stage(project_dir):
     """
-    Find all source images from all album directories.
+    Find the latest stage in the project directory.
     
     Args:
-        root_dir (str): Path to the root directory containing album folders.
+        project_dir (str): Path to the project directory.
         
     Returns:
-        list: List of paths to all source images.
+        str: The latest stage number.
+    """
+    # Get all directories matching stage_*
+    stage_dirs = [d for d in os.listdir(project_dir) if os.path.isdir(os.path.join(project_dir, d)) and d.startswith('stage_')]
+    
+    if not stage_dirs:
+        raise ValueError(f"No stage directories found in {project_dir}. Directories should be named 'stage_{{stage}}'")
+    
+    # Extract stage numbers and find the maximum
+    stage_numbers = []
+    for dir_name in stage_dirs:
+        try:
+            # Extract the stage number after 'stage_'
+            stage_num = dir_name.split('_', 1)[1]
+            stage_numbers.append(stage_num)
+        except (IndexError, ValueError):
+            continue
+    
+    if not stage_numbers:
+        raise ValueError(f"Could not parse stage numbers from directories in {project_dir}")
+    
+    # Return the highest stage number
+    return max(stage_numbers)
+
+def find_all_images(project_dir, stage):
+    """
+    Find all images in the specified stage directory.
+    
+    Args:
+        project_dir (str): Path to the project directory.
+        stage (str): The stage identifier.
+        
+    Returns:
+        list: List of paths to all images in the stage directory.
     """
     all_images = []
     
-    # Find all album directories
-    for album_dir in os.listdir(root_dir):
-        album_path = os.path.join(root_dir, album_dir)
-        if os.path.isdir(album_path):
-            src_dir = os.path.join(album_path, 'src')
-            if os.path.isdir(src_dir):
-                # Get all image files
-                for ext in ['*.jpg', '*.jpeg', '*.png']:
-                    image_paths = glob.glob(os.path.join(src_dir, ext))
-                    all_images.extend(image_paths)
+    # Get the stage directory path
+    stage_dir = os.path.join(project_dir, f"stage_{stage}")
+    
+    if not os.path.isdir(stage_dir):
+        raise ValueError(f"Stage directory '{stage_dir}' not found")
+    
+    # Get all image files in the stage directory
+    for ext in ['*.jpg', '*.jpeg', '*.png']:
+        image_paths = glob.glob(os.path.join(stage_dir, ext))
+        all_images.extend(image_paths)
     
     return all_images
 
@@ -179,8 +219,19 @@ def main():
     # Parse command-line arguments
     args = parse_args()
     
-    root_dir = args.root_dir
+    project_dir = args.project
     epochs = args.epochs
+    
+    # Get stage - if not provided, find the latest stage
+    if args.stage:
+        stage = args.stage
+    else:
+        try:
+            stage = get_latest_stage(project_dir)
+            print(f"No stage specified, using latest stage: {stage}")
+        except ValueError as e:
+            print(f"Error: {e}")
+            return
     
     # Fixed parameters
     learning_rate = 1e-4
@@ -189,36 +240,49 @@ def main():
     scheduler_step = 10
     
     # Define paths
-    model_path = os.path.join(root_dir, 'rank_model.pth')
-    
-    # Make sure models directory exists
-    os.makedirs(os.path.dirname(model_path), exist_ok=True)
+    model_path = os.path.join(project_dir, f"stage_{stage}_rank_model.pth")
+    label_csv_path = os.path.join(project_dir, f"stage_{stage}_rank_labels.csv")
+    log_file_path = os.path.join(project_dir, f"stage_{stage}_rank_log.csv")
+
+    # Delete existing model and log if it exists
+    for path in [model_path, log_file_path]:
+        if os.path.exists(path):
+            os.remove(path)
     
     # Device configuration
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     print(f"Using device: {device}")
     
-    # Find all images (for reporting purposes only)
-    print("Checking for images...")
-    all_images = find_all_images(root_dir)
-    
-    if not all_images:
-        print("Error: No images found. Ensure that album directories contain src/ folders with image files.")
+    # Check if label CSV exists
+    if not os.path.exists(label_csv_path):
+        print(f"Error: Label CSV not found at {label_csv_path}")
         return
     
-    print(f"Found {len(all_images)} images across all albums.")
+    # Find all images (for reporting purposes only)
+    print("Checking for images...")
+    try:
+        all_images = find_all_images(project_dir, stage)
+    except ValueError as e:
+        print(f"Error: {e}")
+        return
+    
+    if not all_images:
+        print(f"Error: No images found in stage_{stage} directory. Ensure that the directory contains image files.")
+        return
+    
+    print(f"Found {len(all_images)} images in stage_{stage}.")
     
     # Create data loaders
     try:
-        print("Loading and processing labels from CSV files...")
-        train_loader, val_loader, test_loader = create_data_loaders(
-            root_dir=root_dir,
+        print(f"Loading and processing labels from {label_csv_path}...")
+        train_loader, val_loader = create_data_loaders(
+            root_dir=os.path.join(project_dir, f"stage_{stage}"),
+            labels_csv=label_csv_path,
             batch_size=batch_size,
             num_workers=num_workers,
             image_size=(224, 224),  # For ViT compatibility
-            train_ratio=0.75,
-            val_ratio=0.15,
-            test_ratio=0.10,
+            train_ratio=0.8,  # Adjusted ratio
+            val_ratio=0.2,   # Adjusted ratio
             random_state=42
         )
     except Exception as e:
@@ -228,11 +292,11 @@ def main():
     # Initialize the model
     print("Initializing the model...")
     if os.path.exists(model_path):
-        model = ViTRanker()
+        model = IMLRankModel()
         model.load_state_dict(torch.load(model_path, map_location=device))
         print(f"Loaded existing model from {model_path}")
     else:
-        model = ViTRanker(num_classes=4, pretrained=True)
+        model = IMLRankModel(num_classes=4, pretrained=True)
     
     model = model.to(device)
     
@@ -248,32 +312,44 @@ def main():
     patience = 8  # Number of epochs to wait for improvement
     epochs_no_improve = 0
     
+    # Define log file path
+    log_file_path = os.path.join(project_dir, f"stage_{stage}_rank_log.csv")
+
+    # Initialize log file (reset and write header)
+    with open(log_file_path, 'w', newline='') as f:
+        writer = csv.writer(f)
+        writer.writerow(['epoch', 'train_loss', 'val_loss', 'val_accuracy'])
+
     # Training loop
     print("Starting training...")
     since = time.time()
     
     for epoch in range(epochs):
-        print(f"\nEpoch {epoch + 1}/{epochs}")
-        print("-" * 10)
-        
         # Train for one epoch
         train_loss = train_one_epoch(model, train_loader, criterion, optimizer, device)
-        print(f"Training Loss: {train_loss:.4f}")
         
         # Validate
         val_loss, val_acc = validate(model, val_loader, criterion, device)
-        print(f"Validation Loss: {val_loss:.4f} | Validation Accuracy: {val_acc:.4f}")
+
+        # Print consolidated epoch results
+        print(f"Epoch {epoch + 1}/{epochs}: train_loss: {train_loss:.8f}, val_loss: {val_loss:.8f}, val_acc: {val_acc:.8f}")
+
+        # Log to CSV
+        with open(log_file_path, 'a', newline='') as f:
+            writer = csv.writer(f)
+            writer.writerow([epoch + 1, f"{train_loss:.8f}", f"{val_loss:.8f}", f"{val_acc:.8f}"])
         
         # Step the scheduler
         scheduler.step()
         
-        # Check if this is the best model so far
-        is_best = val_acc >= best_val_acc
+        # Calculate a dynamic threshold based on 10% of the smaller loss
+        threshold = 0.1 * min(train_loss, val_loss)
+        # Check if this is the best model (accuracy increasing or same accuracy but train and val loss gap isnt too big)
+        is_best = (val_acc > best_val_acc) or (val_acc == best_val_acc and abs(train_loss - val_loss) < threshold)
         
         if is_best:
             best_val_acc = val_acc
             epochs_no_improve = 0
-            best_model_wts = copy.deepcopy(model.state_dict())
             torch.save(model.state_dict(), model_path)
             print(f"New best model found and saved with validation accuracy: {best_val_acc:.4f}")
         else:
@@ -287,18 +363,9 @@ def main():
     print(f"\nTraining complete in {time_elapsed // 60:.0f}m {time_elapsed % 60:.0f}s")
     print(f"Best Validation Accuracy: {best_val_acc:.4f}")
     
-    # Load best model weights
-    if 'best_model_wts' in locals():
-        model.load_state_dict(best_model_wts)
-    
-    # Optionally, evaluate on the test set
-    print("\nEvaluating on the test set...")
-    test_loss, test_acc = validate(model, test_loader, criterion, device)
-    print(f"Test Loss: {test_loss:.4f} | Test Accuracy: {test_acc:.4f}")
-    
-    # Save the final model
-    torch.save(model.state_dict(), model_path)
     print(f"Final model saved at '{model_path}'.")
+    print(f"Stage: {stage}")
+    print(f"Project: {project_dir}")
 
 if __name__ == "__main__":
     main()

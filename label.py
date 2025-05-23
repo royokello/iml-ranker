@@ -3,6 +3,8 @@ import json
 import os
 import csv
 import sys
+import re
+import argparse
 from flask import Flask, jsonify, render_template_string, request, send_from_directory
 from PIL import Image
 import numpy as np
@@ -22,14 +24,26 @@ HTML_TEMPLATE = """<!DOCTYPE html>
             font-family: Arial, sans-serif;
             margin: 0;
             padding: 0;
-            background-color: #f5f5f5;
+            background-color: #ffffff;
         }
         .header {
-            background-color: #3f51b5;
-            color: white;
+            color: #333333;
             width: 100%;
-            padding: 20px 0;
+            padding: 20px 0 10px 0;
             text-align: center;
+            border-bottom: 1px solid #eeeeee;
+        }
+        .header h1 {
+            margin: 0;
+            font-weight: bold;
+        }
+        .header .subtitle {
+            color: #888888;
+            margin: 4px 0 8px 0;
+        }
+        .header .counters {
+            color: #666666;
+            margin-top: 4px;
         }
         .main-container {
             display: flex;
@@ -192,8 +206,9 @@ HTML_TEMPLATE = """<!DOCTYPE html>
 </head>
 <body>
     <div class="header">
-        <h1>IML Ranker - Album: {{ album_name }}</h1>
-        <p>Total Images: {{ total_images }} | Total Labels: {{ total_labels }}</p>
+        <h1>IML Rank</h1>
+        <div class="subtitle">royokello</div>
+        <div class="counters">Total Images: {{ total_images }} | Total Labels: {{ total_labels }}</div>
     </div>
     
     <div class="main-container">
@@ -257,6 +272,9 @@ HTML_TEMPLATE = """<!DOCTYPE html>
             'both': parseInt("{{ label_stats.both }}"),
             'neither': parseInt("{{ label_stats.neither }}")
         };
+        
+        // Get the counter element in the header
+        const totalLabelsCounter = document.querySelector('.counters');
         
         // Variables to track current image identifiers
         let img_1 = "";
@@ -392,6 +410,9 @@ HTML_TEMPLATE = """<!DOCTYPE html>
             rightCountElement.textContent = label_stats.right;
             bothCountElement.textContent = label_stats.both;
             neitherCountElement.textContent = label_stats.neither;
+            
+            // Update the total labels counter in the header
+            totalLabelsCounter.textContent = `Total Images: ${total_images} | Total Labels: ${total_labels}`;
         }
         
         /**
@@ -643,7 +664,10 @@ def load_labels_from_csv(csv_path):
                     img1 = row[img1_idx].strip()
                     img2 = row[img2_idx].strip()
                     choice = row[choice_idx].strip()
-                    labels[f"{img1}_{img2}"] = choice
+                    # Create a consistent pair ID using the same format as when saving
+                    sorted_ids = sorted([img1, img2])
+                    pair_id = f"{sorted_ids[0]}|||{sorted_ids[1]}"
+                    labels[pair_id] = choice
     
     return labels
 
@@ -657,26 +681,30 @@ def get_image_ids(directory):
                 image_ids.append(name)
     return image_ids
 
-def start_labeler(album_directory):
+def start_labeler(project_dir, stage):
     global album_dir, src_dir, labels_path, labels, image_ids
     
-    album_dir = album_directory
+    # Set album directory to the project directory
+    album_dir = project_dir
     
-    # Check album directory
+    # Check project directory
     if not os.path.isdir(album_dir):
-        print(f"Album directory not found: {album_dir}")
-        print("Creating the directory...")
+        print(f"Project directory not found: {album_dir}")
+        print("Creating the project directory...")
         os.makedirs(album_dir, exist_ok=True)
     
-    # Check source directory
-    src_dir = os.path.join(album_dir, 'src_cropped')
+    # Set up stage directory
+    stage_dir = f"stage_{stage}"
+    src_dir = os.path.join(album_dir, stage_dir)
+    
+    # Create stage directory if it doesn't exist
     if not os.path.isdir(src_dir):
-        print(f"Source directory not found: {src_dir}")
-        print("Creating the source directory...")
+        print(f"Stage directory not found: {src_dir}")
+        print("Creating the stage directory...")
         os.makedirs(src_dir, exist_ok=True)
     
-    # Set up labels path
-    labels_path = os.path.join(album_dir, 'rank_labels.csv')
+    # Set up labels path with stage-specific filename
+    labels_path = os.path.join(album_dir, f"{stage_dir}_rank_labels.csv")
     labels = load_labels_from_csv(labels_path)
     
     # Get image IDs
@@ -684,15 +712,46 @@ def start_labeler(album_directory):
     print(f"Found {len(image_ids)} images in {src_dir}")
     
     # Print start message
-    album_name = os.path.basename(album_dir)
-    print(f"Starting labeler for album: {album_name}")
+    project_name = os.path.basename(album_dir)
+    print(f"Starting labeler for project: {project_name}, stage: {stage}")
+
+def get_latest_stage(project_dir):
+    """Find the latest stage directory in the project directory."""
+    stage_pattern = re.compile(r'stage_(\d+)')
+    stages = []
+    
+    # Find all directories that match the stage pattern
+    for item in os.listdir(project_dir):
+        item_path = os.path.join(project_dir, item)
+        if os.path.isdir(item_path):
+            match = stage_pattern.match(item)
+            if match:
+                stage_num = int(match.group(1))
+                stages.append((stage_num, item))
+    
+    if not stages:
+        print(f"No stage directories found in {project_dir}")
+        return None
+    
+    # Sort by stage number (descending) and return the highest
+    stages.sort(reverse=True)
+    return stages[0][1]
 
 # Main execution
 if __name__ == "__main__":
-    if len(sys.argv) < 2:
-        print("Usage: python label.py ALBUM_DIR")
-        sys.exit(1)
+    parser = argparse.ArgumentParser(description='Start the IML Ranker labeling tool.')
+    parser.add_argument('--project', required=True, help='Project directory path where files are kept')
+    parser.add_argument('--stage', type=str, help='Stage number (optional, will use latest stage if not provided)')
     
-    album_dir = sys.argv[1]
-    start_labeler(album_dir)
+    args = parser.parse_args()
+    
+    # If stage is not provided, find the latest stage directory
+    if args.stage is None:
+        stage_dir = get_latest_stage(args.project)
+        if stage_dir is None:
+            print("Error: No stage directories found in the project directory.")
+            sys.exit(1)
+        args.stage = stage_dir.replace('stage_', '')  # Extract just the number
+    
+    start_labeler(args.project, args.stage)
     app.run(debug=True)
